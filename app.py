@@ -1,60 +1,33 @@
-from flask import Flask, request, jsonify
+import streamlit as st
 import torch
-from model import MiniTransformer
+import os
+from mini_llm import MiniLLM, build_tokenizer, BLOCK_SIZE, DEVICE
 
-app = Flask(__name__)
+st.set_page_config(page_title="Mini LLM", page_icon="🤖")
+st.title("Mini LLM — Shakespeare Generator")
 
-# Load text
-with open("sample.txt", "r") as f:
-    text = f.read()
+@st.cache_resource
+def load_model():
+    text = open("input.txt").read()
+    encode, decode, vocab_size = build_tokenizer(text)
+    model = MiniLLM(vocab_size).to(DEVICE)
+    if os.path.exists("model.pt"):
+        model.load_state_dict(torch.load("model.pt", map_location=DEVICE))
+        model.eval()
+    return model, encode, decode
 
-chars = sorted(list(set(text)))
+model, encode, decode = load_model()
 
-stoi = {ch:i for i,ch in enumerate(chars)}
-itos = {i:ch for ch,i in stoi.items()}
+prompt      = st.text_area("Enter a prompt", value="To be or not to be")
+max_tokens  = st.slider("Tokens to generate", 50, 500, 200)
+temperature = st.slider("Temperature", 0.1, 2.0, 1.0, step=0.1)
 
-vocab_size = len(chars)
-
-# Load model
-model = MiniTransformer(vocab_size)
-model.load_state_dict(torch.load("mini_llm.pth"))
-
-model.eval()
-
-@app.route("/")
-def home():
-    return "Mini Transformer LLM Running"
-
-@app.route("/generate", methods=["POST"])
-def generate():
-
-    data = request.json
-    start = data["text"]
-
-    input_seq = torch.tensor(
-        [stoi[c] for c in start],
-        dtype=torch.long
-    ).unsqueeze(1)
-
-    for _ in range(100):
-
-        output = model(input_seq)
-
-        predicted = torch.argmax(
-            output[-1],
-            dim=-1
-        ).item()
-
-        input_seq = torch.cat(
-            [input_seq, torch.tensor([[predicted]])],
-            dim=0
-        )
-
-    result = ''.join(
-        [itos[i.item()] for i in input_seq.squeeze()]
-    )
-
-    return jsonify({"generated_text": result})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+if st.button("Generate"):
+    with st.spinner("Generating..."):
+        try:
+            context = torch.tensor([encode(prompt)], dtype=torch.long, device=DEVICE)
+            with torch.no_grad():
+                out = model.generate(context, max_new_tokens=max_tokens, temperature=temperature)
+            st.text_area("Output", decode(out[0].tolist()), height=300)
+        except KeyError as e:
+            st.error(f"Prompt contains a character not seen in training: {e}")
